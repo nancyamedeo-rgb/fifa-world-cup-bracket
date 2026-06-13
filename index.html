@@ -98,69 +98,76 @@ let bracket = {
 };
 
 /* ═════════════════════════════════════════════════════════
-   AI BRACKET POLL
+   AI BRACKET POLL  – one call per round, run in parallel
 ═════════════════════════════════════════════════════════ */
+const SYSTEM = "You are a JSON-only API. Respond with a valid JSON array only. " +
+  "First character must be [ and last must be ]. No prose, no markdown, no code fences.";
+
+async function callRound(prompt) {
+  const res = await fetch("https://fifa-proxy.nancyamedeo.workers.dev", {
+    method: "POST",
+    headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 2000,
+      system: SYSTEM,
+      tools: [{ type:"web_search_20250305", name:"web_search" }],
+      messages: [{ role:"user", content:prompt }]
+    })
+  });
+  if (!res.ok) { const err = await res.text(); throw new Error("API " + res.status + ": " + err.slice(0,150)); }
+  const data = await res.json();
+  const text = data.content.filter(b => b.type==="text").map(b => b.text).join("");
+  console.log("Round response:", text.slice(0, 300));
+  const m = text.match(/\[[\s\S]*\]/);
+  if (!m) throw new Error("No JSON array: " + text.slice(0, 150));
+  return JSON.parse(m[0]);
+}
+
+function matchPrompt(round, count, label, today) {
+  return "Today is " + today + ". Search for 2026 FIFA World Cup " + label + " results. " +
+    "Return a JSON array of exactly " + count + " matches. Each: " +
+    '{"id":"' + round + '-N","homeFlag":"🇺🇸","homeName":"USA","homeScore":2,' +
+    '"awayFlag":"🇦🇺","awayName":"Australia","awayScore":1,"status":"done","winner":0} ' +
+    "Use homeName/awayName=\"TBD\", homeScore/awayScore=null, status=\"tbd\", winner=null for undecided slots. " +
+    "status values: tbd|upcoming|live|done. winner: 0=home, 1=away, null=not played.";
+}
+
+function applyRound(key, results) {
+  results.forEach((m, i) => {
+    if (!bracket[key][i]) return;
+    bracket[key][i] = {
+      id: m.id || key+"-"+(i+1),
+      home:   { flag: m.homeFlag||"", name: m.homeName||"TBD", score: m.homeScore },
+      away:   { flag: m.awayFlag||"", name: m.awayName||"TBD", score: m.awayScore },
+      status: m.status || "tbd",
+      winner: m.winner !== undefined ? m.winner : null,
+      note:   m.note || (key.toUpperCase()+" "+(i+1))
+    };
+  });
+}
+
 async function fetchBracket() {
   setStatus("Fetching bracket results…", "loading");
   try {
     const today = new Date().toLocaleDateString('en-US',{month:'long',day:'numeric',year:'numeric'});
-    const prompt = `Today is ${today}. Search for the 2026 FIFA World Cup knockout stage bracket results.
 
-Return ONLY a JSON object — no markdown, no preamble. Shape:
-{
-  "r32": [
-    { "id":"r32-1", "homeFlag":"🇺🇸", "homeName":"USA", "homeScore":2, "awayFlag":"🇦🇺", "awayName":"Australia", "awayScore":1, "status":"done", "winner":0 },
-    ...16 entries total, TBD matches use homeName/awayName="TBD", homeScore/awayScore=null, status="tbd", winner=null
-  ],
-  "r16": [...8 entries],
-  "qf":  [...4 entries],
-  "sf":  [...2 entries],
-  "final": { "id":"final", "homeFlag":"", "homeName":"TBD", "homeScore":null, "awayFlag":"", "awayName":"TBD", "awayScore":null, "status":"tbd", "winner":null },
-  "champion": { "flag":"🏆", "name":"TBD" }
-}
+    const [r32a, r32b, r16, qf, sf] = await Promise.all([
+      callRound(matchPrompt("r32", 8, "Round of 32 matches 1-8",  today)),
+      callRound(matchPrompt("r32", 8, "Round of 32 matches 9-16", today)),
+      callRound(matchPrompt("r16", 8, "Round of 16",              today)),
+      callRound(matchPrompt("qf",  4, "Quarterfinals",            today)),
+      callRound(matchPrompt("sf",  2, "Semifinals and Final",     today)),
+    ]);
 
-winner field: 0 = home won, 1 = away won, null = not played.
-status: "tbd" (bracket slot not yet determined), "upcoming" (teams known, match not played), "live", "done".
-If the knockout stage hasn't started yet (group stage still in progress), return all TBD with status "tbd".`;
+    applyRound("r32", [...r32a, ...r32b]);
+    applyRound("r16", r16);
+    applyRound("qf",  qf);
+    applyRound("sf",  sf);
 
-    const res = await fetch("https://fifa-proxy.nancyamedeo.workers.dev", {
-      method: "POST",
-      headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        temperature: 0,
-        max_tokens: 2000,
-        system: "You are a JSON-only data API. Output ONLY the raw JSON structure requested. Do not write any text before or after the JSON. Do not explain your reasoning. Do not use markdown. Do not use code fences. The very first character of your response must be [ or { and the very last character must be ] or }.",
-        tools: [{ type:"web_search_20250305", name:"web_search" }],
-        messages: [{ role:"user", content:prompt }]
-      })
-    });
-
-    if (!res.ok) { const err = await res.text(); throw new Error("API " + res.status + ": " + err.slice(0,200)); }
-    const data = await res.json();
-    const text = data.content.filter(b => b.type==="text").map(b => b.text).join("");
-    // Log raw response for debugging
-    console.log("Raw API response:", text.slice(0, 300));
-    const objMatch = text.match(/\{[\s\S]*\}/);
-    if (!objMatch) throw new Error("No JSON object in: " + text.slice(0, 200));
-    const parsed = JSON.parse(objMatch[0]);
-
-    // map into bracket state
-    ["r32","r16","qf","sf"].forEach(round => {
-      if (!parsed[round]) return;
-      parsed[round].forEach((m, i) => {
-        bracket[round][i] = {
-          id: m.id || `${round}-${i+1}`,
-          home:   { flag: m.homeFlag||"", name: m.homeName||"TBD", score: m.homeScore },
-          away:   { flag: m.awayFlag||"", name: m.awayName||"TBD", score: m.awayScore },
-          status: m.status || "tbd",
-          winner: m.winner !== undefined ? m.winner : null,
-          note:   m.note || `${round.toUpperCase()} ${i+1}`
-        };
-      });
-    });
-    if (parsed.final) {
-      const f = parsed.final;
+    // Final & champion from sf call (last 2 items if included, else separate)
+    if (sf.length >= 3) {
+      const f = sf[2];
       bracket.final = {
         id:"final",
         home: { flag:f.homeFlag||"", name:f.homeName||"TBD", score:f.homeScore },
@@ -168,17 +175,18 @@ If the knockout stage hasn't started yet (group stage still in progress), return
         status: f.status||"tbd", winner: f.winner!==undefined?f.winner:null,
         note:"Jul 19 · MetLife Stadium, NJ"
       };
+      if (sf[3]) bracket.champion = { flag:"🏆", name: sf[3].homeName||"TBD" };
     }
-    if (parsed.champion) bracket.champion = parsed.champion;
 
     const now = new Date();
-    setStatus(`Updated ${now.toLocaleTimeString()} · Next in 1 hr`, "");
+    setStatus("Updated " + now.toLocaleTimeString() + " · Next in 1 hr", "");
   } catch(e) {
     console.error("Bracket fetch error:", e);
     setStatus("Update failed — showing last data", "error");
   }
   renderBracket();
 }
+
 
 /* ═════════════════════════════════════════════════════════
    RENDER
