@@ -236,44 +236,62 @@ function buildHalf(half) {
   // Actually: total=1658. 3 connectors×22=66. Remaining=1592 / 4 cols.
   // r32=420, r16=310, qf=250, sf=250 + 66 = 1296. Hmm, let's just use flex.
 
-  const H = 454; // height of each half panel content area
+  const H    = 430; // match area height per half
+  const LABEL_H = 28; // fixed label row height
 
-  function col(matches, w, label, sub) {
-    const n    = matches.length;
+  const COLS = [
+    { matches:r32s,  w:390, label:"ROUND OF 32",   sub:"Jun 28–Jul 3" },
+    { matches:r16s,  w:295, label:"ROUND OF 16",   sub:"Jul 4–7"      },
+    { matches:qfs,   w:255, label:"QUARTERFINALS", sub:"Jul 9–11"     },
+    { matches:[sf],  w:255, label:"SEMIFINALS",    sub:"Jul 14–15"    },
+  ];
+  const CONN_W = 20;
+
+  function matchesHTML(matches, w) {
+    const n = matches.length;
     const slot = H / n;
-    const items = matches.map(m =>
+    return matches.map(m =>
       `<div style="height:${slot}px;display:flex;align-items:center;padding:0 4px;">
          ${mbox(m, w-12)}
        </div>`
     ).join("");
-    return `<div style="width:${w}px;flex-shrink:0;display:flex;flex-direction:column;">
-      <div class="round-label">${label}<span class="round-sublabel">${sub}</span></div>
-      <div style="flex:1;display:flex;flex-direction:column;">${items}</div>
-    </div>`;
   }
 
-  function conn(fromN, toN, h) {
-    const W=20, fromSlot=h/fromN, toSlot=h/toN;
+  function connSVG(fromN, toN) {
+    const W=CONN_W, fromSlot=H/fromN, toSlot=H/toN;
     let paths="";
     for(let i=0;i<fromN;i++){
       const y1=(i+0.5)*fromSlot, j=Math.floor(i/2), y2=(j+0.5)*toSlot;
       paths+=`<path d="M0 ${y1} H${W/2} V${y2} H${W}" stroke="#2D3748" stroke-width="1.5" fill="none"/>`;
     }
-    return `<div style="width:${W}px;flex-shrink:0;margin-top:22px;">
-      <svg width="${W}" height="${h}" xmlns="http://www.w3.org/2000/svg">${paths}</svg>
-    </div>`;
+    return `<svg width="${W}" height="${H}" xmlns="http://www.w3.org/2000/svg">${paths}</svg>`;
   }
 
-  return `<div style="display:flex;align-items:stretch;height:${H+24}px;padding:8px 0;">
-    ${col(r32s,390,"ROUND OF 32","Jun 28–Jul 3")}
-    ${conn(8,4,H)}
-    ${col(r16s,295,"ROUND OF 16","Jul 4–7")}
-    ${conn(4,2,H)}
-    ${col(qfs, 255,"QUARTERFINALS","Jul 9–11")}
-    ${conn(2,1,H)}
-    ${col([sf], 255,"SEMIFINALS","Jul 14–15")}
-    ${conn(1,1,H)}
-  </div>`;
+  // Build label row and match row separately so labels are always at top
+  let labelRow = `<div style="display:flex;align-items:flex-end;height:${LABEL_H}px;padding:0 8px;">`;
+  let matchRow = `<div style="display:flex;align-items:stretch;height:${H}px;">`;
+
+  COLS.forEach((c, idx) => {
+    const nextN = idx < COLS.length-1 ? COLS[idx+1].matches.length : 1;
+    labelRow += `<div style="width:${c.w}px;flex-shrink:0;text-align:center;">
+      <span class="round-label" style="font-size:12px;">${c.label}<span class="round-sublabel">${c.sub}</span></span>
+    </div>`;
+    if (idx < COLS.length-1) labelRow += `<div style="width:${CONN_W}px;flex-shrink:0;"></div>`;
+
+    matchRow += `<div style="width:${c.w}px;flex-shrink:0;display:flex;flex-direction:column;">
+      ${matchesHTML(c.matches, c.w)}
+    </div>`;
+    if (idx < COLS.length-1) {
+      matchRow += `<div style="width:${CONN_W}px;flex-shrink:0;display:flex;align-items:center;">
+        ${connSVG(c.matches.length, COLS[idx+1].matches.length)}
+      </div>`;
+    }
+  });
+
+  labelRow += `</div>`;
+  matchRow += `</div>`;
+
+  return `<div style="padding:6px 8px 4px;">${labelRow}${matchRow}</div>`;
 }
 
 function buildFinal() {
@@ -312,7 +330,7 @@ function renderBracket() {
   const track = document.getElementById("scrollTrack");
   const upper = buildHalf(0);
   const lower = buildHalf(1);
-  const divider = `<div style="height:1px;background:var(--line);margin:0 16px;"></div>`;
+  const divider = `<div style="height:2px;background:linear-gradient(to right,transparent,var(--gold),transparent);margin:2px 16px;"></div>`;
   const content = upper + divider + lower;
   track.innerHTML = content + content; // duplicate for seamless loop
   document.getElementById("finalCol").innerHTML = buildFinal();
